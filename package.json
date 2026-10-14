@@ -1,0 +1,32 @@
+{
+  "name": "@carlitose86/pi-auto-compact",
+  "version": "0.1.0",
+  "description": "Automatic compaction for Pi before the context fills up, with a threshold per model",
+  "keywords": ["pi-package", "pi", "pi-extension", "compaction", "context", "extension"],
+  "license": "MIT",
+  "author": "carlitose86",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/carlitose/pi-auto-compact.git"
+  },
+  "type": "module",
+  "files": ["extensions/auto-compact.ts", "README.md", "LICENSE"],
+  "pi": {
+    "extensions": ["./extensions/auto-compact.ts"]
+  },
+  "dependencies": {
+    "@henryqw/pi-config-store": "3.1.0",
+    "@henryqw/pi-task-models": "8.1.3"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "test": "node --experimental-vm-modules --test tests/auto-compact.test.mjs tests/auto-compact-recovery.test.mjs tests/package.test.mjs tests/model-thresholds.test.mjs",
+    "smoke": "node --experimental-vm-modules tests/auto-compact.smoke.mjs",
+    "smoke:recovery": "node --experimental-vm-modules tests/auto-compact-recovery.smoke.mjs"
+  }
+}
