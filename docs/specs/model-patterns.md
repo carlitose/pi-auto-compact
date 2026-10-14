@@ -6,7 +6,7 @@
 - Standalone: true
 
 ### Children
-- [ACP-01](../tickets/model-patterns/01-model-patterns.md)
+- [ACP-01](../tickets/model-patterns/done/01-model-patterns.md)
 
 ## Tipo
 Funcionalidad.
