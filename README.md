@@ -48,9 +48,27 @@ The commands write `<agent-dir>/config/pi-auto-compact/config.json` (usually
 }
 ```
 
-A key is `provider/id` or just the model `id`. For each check the most specific match wins:
-`provider/id`, then `id`, then `autoCompactThreshold`. A value out of range or an empty key makes
-the whole file invalid: the extension says so and uses 70% until you fix it.
+A key is `provider/id` or just the model `id`.
+
+To cover many models at once, `modelPatterns` is an ordered list of JavaScript regular
+expressions tested against `provider/id`; the first that matches gives the threshold. For
+example, Anthropic models at 30% and OpenAI models at 90%:
+
+```json
+{
+  "autoCompactThreshold": 70,
+  "modelPatterns": [
+    { "match": "^anthropic/", "threshold": 30 },
+    { "match": "^openai", "threshold": 90 }
+  ]
+}
+```
+
+For each check the most specific match wins: `modelThresholds` by `provider/id`, then by `id`,
+then the first matching `modelPatterns` entry, then `autoCompactThreshold`. `/auto-compact model`
+writes only `modelThresholds`; edit patterns in the file. A value out of range, an empty key, an
+empty or invalid pattern makes the whole file invalid: the extension says so and uses 70% until
+you fix it.
 
 ## Summary model
 

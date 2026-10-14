@@ -1,6 +1,6 @@
 {
   "name": "@carlitose86/pi-auto-compact",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Automatic compaction for Pi before the context fills up, with a threshold per model",
   "keywords": ["pi-package", "pi", "pi-extension", "compaction", "context", "extension"],
   "license": "MIT",

@@ -124,3 +124,56 @@ for (const [label, modelThresholds] of [
     assert.equal(h.calls.compactions.length, 0, "50% is under the 70% fallback");
   });
 }
+
+const patterns = [{ match: "^anthropic/", threshold: 30 }, { match: "^openai", threshold: 90 }];
+
+test("a pattern on provider/id gives its threshold; no match falls back to the general one", async () => {
+  const config = { autoCompactThreshold: 70, modelPatterns: patterns };
+  assert.equal(await compactsAt(50, { config, model: opus }), true, "anthropic at 30%");
+  assert.equal(await compactsAt(80, { config, model: luna }), false, "openai-codex at 90%");
+  assert.equal(await compactsAt(80, { config, model: { provider: "google", id: "gemini" } }), true, "general 70%");
+});
+
+test("the first matching pattern wins", async () => {
+  const config = { autoCompactThreshold: 30, modelPatterns: [{ match: "opus", threshold: 95 }, { match: "^anthropic/", threshold: 30 }] };
+  assert.equal(await compactsAt(50, { config, model: opus }), false);
+});
+
+test("an exact model entry wins over any pattern", async () => {
+  const config = { autoCompactThreshold: 70, modelThresholds: { luna: 40 }, modelPatterns: patterns };
+  assert.equal(await compactsAt(50, { config, model: luna }), true);
+});
+
+test("both commands keep the patterns, and the prompt shows the pattern threshold as inherited", async () => {
+  const config = { autoCompactThreshold: 70, modelPatterns: patterns };
+  const general = await harness({ config, input: answered("80") }); await general.start();
+  await general.commands.get("auto-compact").handler("", general.ctx);
+  assert.deepEqual(saved(general), [{ autoCompactThreshold: 80, modelPatterns: patterns }]);
+  const prompts = [];
+  const h = await harness({ config, model: opus, input: answered("40") }); await h.start();
+  const ask = h.ctx.ui.input;
+  h.ctx.ui.input = (title, ...rest) => { prompts.push(title); return ask(title, ...rest); };
+  await h.commands.get("auto-compact").handler("model", h.ctx);
+  assert.match(prompts[0], /current: 30 \(inherited\)/);
+  assert.deepEqual(saved(h), [{ autoCompactThreshold: 70, modelPatterns: patterns, modelThresholds: { "anthropic/opus": 40 } }]);
+  const reset = await harness({ config: saved(h)[0], model: opus, input: answered("default") }); await reset.start();
+  await reset.commands.get("auto-compact").handler("model", reset.ctx);
+  assert.deepEqual(saved(reset), [{ autoCompactThreshold: 70, modelPatterns: patterns }]);
+  assert.match(reset.calls.notifications.at(-1)[0], /removed; using the default 30%/, "the pattern applies again");
+});
+
+for (const [label, modelPatterns] of [
+  ["a pattern that does not compile", [{ match: "(", threshold: 50 }]],
+  ["an empty pattern", [{ match: "", threshold: 50 }]],
+  ["a pattern threshold out of range", [{ match: "^anthropic/", threshold: 100 }]],
+  ["an object instead of a list", { "^anthropic/": 30 }],
+  ["a bare string in the list", ["^anthropic/"]],
+]) {
+  test(`${label} rejects the file and falls back to 70%`, async () => {
+    const config = { autoCompactThreshold: 30, modelPatterns };
+    const h = await harness({ config, model: opus, percent: 50 }); await h.start();
+    assert.match(h.calls.notifications.at(-1)[0], /Couldn't read pi-auto-compact config; using 70%/);
+    h.emit("turn_start");
+    assert.equal(h.calls.compactions.length, 0, "50% is under the 70% fallback");
+  });
+}
