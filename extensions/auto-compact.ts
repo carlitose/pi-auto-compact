@@ -157,23 +157,19 @@ export const AUTO_COMPACT_TASK = {
 	purpose: "Compact session context before it is exhausted.",
 	defaultProfile: "fast",
 } as const satisfies ModelTask;
-type AutoCompactConfig = { autoCompactThreshold: number; modelThresholds?: Record<string, number> };
+type ModelPattern = { match: string; threshold: number };
+type AutoCompactConfig = {
+	autoCompactThreshold: number;
+	modelThresholds?: Record<string, number>;
+	modelPatterns?: ModelPattern[];
+};
 type ModelRef = { provider?: string; id?: string } | undefined;
 
 function isValidThreshold(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= MIN_COMPACT_THRESHOLD_PERCENT && value < 100;
 }
 
-function parseAutoCompactConfig(value: unknown): AutoCompactConfig {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		throw new Error("Config must be an object.");
-	}
-	const threshold = (value as Record<string, unknown>).autoCompactThreshold ?? DEFAULT_COMPACT_THRESHOLD_PERCENT;
-	if (!isValidThreshold(threshold)) {
-		throw new Error(`autoCompactThreshold must be at least ${MIN_COMPACT_THRESHOLD_PERCENT} and below 100.`);
-	}
-	const table = (value as Record<string, unknown>).modelThresholds;
-	if (table === undefined) return { autoCompactThreshold: threshold };
+function parseModelThresholds(table: unknown): Record<string, number> {
 	if (!table || typeof table !== "object" || Array.isArray(table)) {
 		throw new Error("modelThresholds must be an object of provider/id or id keys.");
 	}
@@ -184,19 +180,56 @@ function parseAutoCompactConfig(value: unknown): AutoCompactConfig {
 			throw new Error(`modelThresholds.${key} must be at least ${MIN_COMPACT_THRESHOLD_PERCENT} and below 100.`);
 		}
 	}
-	return { autoCompactThreshold: threshold, modelThresholds: Object.fromEntries(entries) as Record<string, number> };
+	return Object.fromEntries(entries) as Record<string, number>;
+}
+
+function parseModelPatterns(list: unknown): ModelPattern[] {
+	if (!Array.isArray(list)) throw new Error("modelPatterns must be a list of { match, threshold }.");
+	return list.map((item, index) => {
+		const { match, threshold } = (item ?? {}) as Record<string, unknown>;
+		if (typeof match !== "string" || !match) throw new Error(`modelPatterns[${index}].match must be a regular expression.`);
+		try {
+			new RegExp(match);
+		} catch {
+			throw new Error(`modelPatterns[${index}].match is not a valid regular expression.`);
+		}
+		if (!isValidThreshold(threshold)) {
+			throw new Error(`modelPatterns[${index}].threshold must be at least ${MIN_COMPACT_THRESHOLD_PERCENT} and below 100.`);
+		}
+		return { match, threshold };
+	});
+}
+
+function parseAutoCompactConfig(value: unknown): AutoCompactConfig {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("Config must be an object.");
+	}
+	const raw = value as Record<string, unknown>;
+	const threshold = raw.autoCompactThreshold ?? DEFAULT_COMPACT_THRESHOLD_PERCENT;
+	if (!isValidThreshold(threshold)) {
+		throw new Error(`autoCompactThreshold must be at least ${MIN_COMPACT_THRESHOLD_PERCENT} and below 100.`);
+	}
+	const config: AutoCompactConfig = { autoCompactThreshold: threshold };
+	if (raw.modelThresholds !== undefined) config.modelThresholds = parseModelThresholds(raw.modelThresholds);
+	if (raw.modelPatterns !== undefined) config.modelPatterns = parseModelPatterns(raw.modelPatterns);
+	return config;
 }
 
 function modelKey(model: ModelRef): string | undefined {
 	return model?.provider && model.id ? `${model.provider}/${model.id}` : undefined;
 }
 
-// Most specific first: provider/id, then the bare id, then the general threshold.
+// Most specific first: provider/id, then the bare id, then the first pattern matching
+// provider/id, then the general threshold.
 function thresholdFor(config: AutoCompactConfig, model: ModelRef): number {
 	const table = config.modelThresholds ?? {};
 	const key = modelKey(model);
 	if (key !== undefined && Object.hasOwn(table, key)) return table[key];
 	if (model?.id && Object.hasOwn(table, model.id)) return table[model.id];
+	if (key !== undefined) {
+		const pattern = config.modelPatterns?.find(({ match }) => new RegExp(match).test(key));
+		if (pattern) return pattern.threshold;
+	}
 	return config.autoCompactThreshold;
 }
 
@@ -206,9 +239,8 @@ function withThreshold(config: AutoCompactConfig, key: string | undefined, thres
 	const table: Record<string, number> = { ...config.modelThresholds };
 	if (threshold === undefined) delete table[key];
 	else table[key] = threshold;
-	return Object.keys(table).length
-		? { autoCompactThreshold: config.autoCompactThreshold, modelThresholds: table }
-		: { autoCompactThreshold: config.autoCompactThreshold };
+	const { modelThresholds: _old, ...rest } = config;
+	return Object.keys(table).length ? { ...rest, modelThresholds: table } : rest;
 }
 
 function configuredTaskRoutes(ctx: ExtensionContext): ResolvedTaskRoute[] {
@@ -684,7 +716,7 @@ export default function (pi: ExtensionAPI) {
 				key === undefined
 					? `Auto-compact threshold set to ${threshold}%.`
 					: reset
-						? `Auto-compact threshold for ${key} removed; using the default ${next.autoCompactThreshold}%.`
+						? `Auto-compact threshold for ${key} removed; using the default ${thresholdFor(next, ctx.model)}%.`
 						: `Auto-compact threshold for ${key} set to ${threshold}%.`,
 				"info",
 			);
