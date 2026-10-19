@@ -125,7 +125,7 @@ function describeElapsed(startedAt: number | null) {
 // context was, and what happens next.
 function describeCompactionFailure(
 	event: { reason?: string; aborted?: boolean; errorMessage?: string; willRetry?: boolean; fromExtension?: boolean },
-	facts: { ours: boolean; inherited?: boolean; retrying?: boolean; startedAt: number | null; percent: number | null; threshold: number },
+	facts: { ours: boolean; inherited?: boolean; retrying?: boolean; resuming?: boolean; startedAt: number | null; percent: number | null; threshold: number },
 ) {
 	const parts: string[] = [];
 	const what = event.aborted ? "Compaction was cancelled" : "Compaction failed";
@@ -144,6 +144,8 @@ function describeCompactionFailure(
 	if (facts.percent !== null) parts.push(`Context was at ${Math.round(facts.percent)}% of the window (threshold ${facts.threshold}%).`);
 	parts.push(facts.retrying
 		? "Nothing was summarized, so this session is compacting again now."
+		: facts.resuming
+			? "Nothing was summarized. Starting the compaction had interrupted the turn, so the turn continues now without compacting, and compaction is tried again once that turn ends."
 		: event.aborted
 			? "Nothing was summarized, so the next turn is still over the threshold and compacts again."
 			: "Nothing was summarized; the next turn tries again.");
@@ -342,6 +344,7 @@ function withLoadedSkills<T>(result: T, read: unknown): T {
 
 const RESUME_MESSAGE_TYPE = "pi-auto-compact/resume";
 const RESUME_MESSAGE = "Auto-compact ran. Continue the current task.";
+const RESUME_FAILED_MESSAGE = "Auto-compact could not compact and had interrupted this turn. Continue the current task.";
 const COMPACTION_ABORT_ERROR = "This operation was aborted";
 const ACTIVATION_ERROR =
 	"pi-auto-compact failed to activate: Pi built-in auto-compaction is enabled. " +
@@ -433,6 +436,12 @@ export default function (pi: ExtensionAPI) {
 	// Prevent lifecycle hooks from starting duplicate summaries.
 	let compactionPending = false;
 	let compactionAbortExpected = false;
+	// ctx.compact() aborts the running turn first. When the compaction then fails or is
+	// cancelled, nothing would ever answer that turn: the session would sit still with the
+	// user's message unanswered. interruptedTurn remembers the abort; holdOff keeps the
+	// resumed turn from compacting (and interrupting itself) again until it ends.
+	let interruptedTurn = false;
+	let holdOff = false;
 	let stallTimer: ReturnType<typeof setTimeout> | null = null;
 	let missingRouteReported = false;
 	let compactionStartedAt: number | null = null;
@@ -544,6 +553,8 @@ export default function (pi: ExtensionAPI) {
 		active = false;
 		compactionPending = false;
 		compactionAbortExpected = false;
+		interruptedTurn = false;
+		holdOff = false;
 		compactionStartedAt = null;
 		inheritedStartedAt = null;
 		clearStallNotice();
@@ -556,6 +567,7 @@ export default function (pi: ExtensionAPI) {
 	const runCompaction = (ctx: ExtensionContext, resumeTask = true) => {
 		if (closed) return;
 		compactionAbortExpected = Boolean(ctx.signal && !ctx.signal.aborted);
+		interruptedTurn = resumeTask && compactionAbortExpected;
 		compactionStartedAt = Date.now();
 		// A fresh compaction supersedes whatever the replaced instance had left behind.
 		clearOrphanNotice();
@@ -571,6 +583,7 @@ export default function (pi: ExtensionAPI) {
 				if (closed) return;
 				compactionPending = false;
 				compactionAbortExpected = false;
+				interruptedTurn = false;
 				if (!resumeTask) return;
 				// Pi may flush queued input during compaction_end. Wait one macrotask
 				// before checking idle, otherwise follow-up can race that flush.
@@ -592,12 +605,24 @@ export default function (pi: ExtensionAPI) {
 				if (closed) return;
 				compactionPending = false;
 				compactionAbortExpected = false;
+				const resume = interruptedTurn;
+				interruptedTurn = false;
+				if (!resume) return;
+				holdOff = true;
+				defer(() => {
+					if (!ctx.isIdle()) return;
+					pi.sendMessage({
+						customType: RESUME_MESSAGE_TYPE,
+						content: RESUME_FAILED_MESSAGE,
+						display: false,
+					}, { triggerTurn: true });
+				});
 			},
 		});
 	};
 
 	const compactIfNeeded = (ctx: ExtensionContext, resumeTask = true) => {
-		if (!active || compactionPending) return;
+		if (!active || compactionPending || holdOff) return;
 
 		const usage = ctx.getContextUsage();
 		if (usage?.percent == null || usage.percent <= thresholdOf(ctx)) return;
@@ -636,7 +661,11 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// Catch threshold crossings caused by the final provider turn.
-	pi.on("agent_end", (_event, ctx) => compactIfNeeded(ctx, false));
+	// A turn that ends interrupts nothing, so the held-off compaction can run here.
+	pi.on("agent_end", (_event, ctx) => {
+		holdOff = false;
+		compactIfNeeded(ctx, false);
+	});
 
 	// Runs before every provider request. Temporary truncation protects request
 	// size while asynchronous default compaction summarizes persisted history.
@@ -652,6 +681,8 @@ export default function (pi: ExtensionAPI) {
 			Math.floor(contextWindow * KEEP_RECENT_PERCENT / 100),
 		);
 		if (!truncated) return;
+		// Held off: protect the request size, but do not interrupt the resumed turn.
+		if (holdOff) return { messages: truncated };
 
 		// Mark pending before deferring. Another context event can fire before
 		// setImmediate runs, and must not schedule a second compaction.
@@ -767,7 +798,7 @@ export default function (pi: ExtensionAPI) {
 		// compaction away. Esc reaches the instance that started it, and stays final.
 		const retrying = event.aborted && inherited !== null && recoverLostCompaction(ctx, percent);
 		const text = describeCompactionFailure(event, {
-			ours, inherited: inherited !== null, retrying, startedAt, percent, threshold: thresholdOf(ctx),
+			ours, inherited: inherited !== null, retrying, resuming: ours && interruptedTurn, startedAt, percent, threshold: thresholdOf(ctx),
 		});
 		report(ctx, `${text} Log: ${logPath()}`, event.aborted ? "warning" : "error");
 	});

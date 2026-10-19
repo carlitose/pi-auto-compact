@@ -74,7 +74,7 @@ test("one extra attempt shared across all routes, reset only for a new event", a
   assert.deepEqual(levels, ["medium", "off", "medium"]);
   assert.equal(h.calls.auth, 2); assert.equal(h.calls.notifications.length, 2);
   assert.equal(h.calls.sent.length, 0);
-  h.calls.compactions[0].onError(lengthError()); h.emit("turn_start");
+  h.calls.compactions[0].onError(lengthError()); h.emit("agent_end");
   await h.emit("session_before_compact", eventFor(h));
   assert.deepEqual(levels, ["medium", "off", "medium", "medium", "off", "medium"]);
 });
