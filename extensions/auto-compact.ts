@@ -423,8 +423,31 @@ export default function (pi: ExtensionAPI) {
 	});
 	let active = false;
 	let config: AutoCompactConfig = { autoCompactThreshold: DEFAULT_COMPACT_THRESHOLD_PERCENT };
+	// A session can stay open for days; an edit of the config file must not wait for /reload.
+	// The file is stat'ed on every check and read again only when its time or size changed.
+	let configStamp: string | undefined;
+	const configStampNow = () => {
+		try {
+			const stat = statSync(join(getAgentDir(), "config", "pi-auto-compact", "config.json"));
+			return `${stat.mtimeMs}:${stat.size}`;
+		} catch {
+			return "missing";
+		}
+	};
+	const refreshConfig = () => {
+		if (configStamp === undefined) return;
+		const stamp = configStampNow();
+		if (stamp === configStamp) return;
+		configStamp = stamp;
+		try {
+			config = configStore.loadSync().value;
+		} catch {
+			// A half-written or invalid edit keeps the thresholds already in use.
+		}
+	};
 	// The session model can change between turns, so every check asks for its threshold again.
 	const thresholdOf = (ctx: ExtensionContext) => {
+		refreshConfig();
 		let model: ModelRef;
 		try {
 			model = ctx.model;
@@ -758,6 +781,7 @@ export default function (pi: ExtensionAPI) {
 	// activation unless effective global/project settings disable it.
 	pi.on("session_start", (event, ctx) => {
 		if (closed) return;
+		configStamp = configStampNow();
 		try {
 			config = configStore.loadSync().value;
 		} catch {

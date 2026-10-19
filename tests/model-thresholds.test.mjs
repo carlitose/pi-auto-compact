@@ -177,3 +177,20 @@ for (const [label, modelPatterns] of [
     assert.equal(h.calls.compactions.length, 0, "50% is under the 70% fallback");
   });
 }
+
+test("an edit of the config file applies at the next check, without /reload", async () => {
+  const file = "fixture/config/pi-auto-compact/config.json";
+  const general = { autoCompactThreshold: 30 };
+  const h = await harness({ config: general, model: luna, percent: 50, files: [[file, JSON.stringify(general)]] });
+  await h.start();
+  h.emit("turn_start");
+  assert.equal(h.calls.compactions.length, 1, "the general 30% applies");
+  h.calls.compactions[0].onComplete(); h.flush();
+  const patterns = { autoCompactThreshold: 30, modelPatterns: [{ match: "^openai", threshold: 90 }] };
+  h.stored.config = patterns; h.files.set(file, JSON.stringify(patterns));
+  h.emit("turn_start");
+  assert.equal(h.calls.compactions.length, 1, "the edited 90% for openai applies");
+  h.stored.config = { autoCompactThreshold: 5 }; h.files.set(file, "{ half written");
+  h.emit("turn_start");
+  assert.equal(h.calls.compactions.length, 1, "an invalid edit keeps the thresholds in use");
+});

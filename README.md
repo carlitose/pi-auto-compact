@@ -36,7 +36,9 @@ check.
 ## Configuration
 
 The commands write `<agent-dir>/config/pi-auto-compact/config.json` (usually
-`~/.pi/agent/config/pi-auto-compact/config.json`). You can also edit it by hand:
+`~/.pi/agent/config/pi-auto-compact/config.json`). You can also edit it by hand; open
+sessions pick up the edit at their next check, without `/reload` (an invalid edit is
+ignored and the thresholds in use stay):
 
 ```json
 {
