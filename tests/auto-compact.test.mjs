@@ -30,6 +30,33 @@ for (const mode of ["low", "busy", "final"]) {
   });
 }
 
+test("a failed compaction that interrupted a turn resumes it without compacting again", async () => {
+  const h = await harness(); await h.start();
+  h.emit("turn_start");
+  h.emit("session_compact_failed", { reason: "manual", aborted: true });
+  h.calls.compactions[0].onError(new Error("cancelled")); h.flush();
+  assert.equal(h.calls.sent.length, 1, "the interrupted turn is answered");
+  assert.equal(h.calls.sent[0][0].customType, "pi-auto-compact/resume");
+  assert.match(h.calls.sent[0][0].content, /could not compact/);
+  assert.equal(h.calls.sent[0][1].triggerTurn, true);
+  assert.match(h.calls.notifications.at(-1)[0], /turn continues now without compacting/);
+  h.emit("turn_start"); h.emit("turn_end", toolTurn);
+  const result = h.emit("context", contextEvent); h.flush();
+  assert.equal(result.messages.at(-1).content, "second", "the request size is still protected");
+  assert.equal(h.calls.compactions.length, 1, "the resumed turn is not interrupted again");
+  h.emit("agent_end");
+  assert.equal(h.calls.compactions.length, 2, "compaction is tried again once the turn ends");
+  h.calls.compactions[1].onError(new Error("cancelled")); h.flush();
+  assert.equal(h.calls.sent.length, 1, "a compaction at the end of a turn interrupted nothing");
+});
+
+test("a failed compaction does not resume a session that is busy again", async () => {
+  const h = await harness({ idle: false }); await h.start();
+  h.emit("turn_start");
+  h.calls.compactions[0].onError(new Error("cancelled")); h.flush();
+  assert.equal(h.calls.sent.length, 0);
+});
+
 test("deferred context compaction still preserves system messages", async () => {
   const h = await harness(); await h.start();
   const result = h.emit("context", contextEvent);
@@ -169,7 +196,7 @@ for (const configured of [false, true]) {
 
 test("a cancelled compaction of ours says what happened and where the log is", async () => {
   const h = await harness({ agentDir: "agent" }); await h.start();
-  h.emit("turn_start");
+  h.emit("agent_end");
   h.emit("session_compact_failed", { reason: "manual", aborted: true, willRetry: false, fromExtension: false });
   assert.equal(h.calls.notifications.length, 1);
   const [text, level] = h.calls.notifications[0];
