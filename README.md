@@ -33,6 +33,10 @@ The threshold is checked before each turn, after each tool turn and at the end o
 the model the session is using at that moment. Switching model applies its threshold at the next
 check.
 
+Pi starts a compaction only after the running turn has stopped. A turn that starts in that gap,
+for example one triggered by a background-terminal notice, is stopped too, so the summary does not
+wait for it; the turn continues once the summary is in.
+
 ## Configuration
 
 The commands write `<agent-dir>/config/pi-auto-compact/config.json` (usually

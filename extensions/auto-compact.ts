@@ -465,6 +465,13 @@ export default function (pi: ExtensionAPI) {
 	// resumed turn from compacting (and interrupting itself) again until it ends.
 	let interruptedTurn = false;
 	let holdOff = false;
+	// ctx.compact() first waits for the aborted run to settle, and Pi counts the session as idle
+	// in that gap. A message with triggerTurn (a terminal notice, a goal check) then starts a new
+	// run, and Pi's compaction waits for that whole run, often half an hour, while this guard
+	// keeps every other compaction out and the context grows past the window.
+	// waitingForSummary covers that gap; resumeAfter says whether a turn awaits the result.
+	let waitingForSummary = false;
+	let resumeAfter = false;
 	let stallTimer: ReturnType<typeof setTimeout> | null = null;
 	let missingRouteReported = false;
 	let compactionStartedAt: number | null = null;
@@ -578,6 +585,8 @@ export default function (pi: ExtensionAPI) {
 		compactionAbortExpected = false;
 		interruptedTurn = false;
 		holdOff = false;
+		waitingForSummary = false;
+		resumeAfter = false;
 		compactionStartedAt = null;
 		inheritedStartedAt = null;
 		clearStallNotice();
@@ -591,6 +600,8 @@ export default function (pi: ExtensionAPI) {
 		if (closed) return;
 		compactionAbortExpected = Boolean(ctx.signal && !ctx.signal.aborted);
 		interruptedTurn = resumeTask && compactionAbortExpected;
+		waitingForSummary = true;
+		resumeAfter = resumeTask;
 		compactionStartedAt = Date.now();
 		// A fresh compaction supersedes whatever the replaced instance had left behind.
 		clearOrphanNotice();
@@ -607,7 +618,8 @@ export default function (pi: ExtensionAPI) {
 				compactionPending = false;
 				compactionAbortExpected = false;
 				interruptedTurn = false;
-				if (!resumeTask) return;
+				waitingForSummary = false;
+				if (!resumeAfter) return;
 				// Pi may flush queued input during compaction_end. Wait one macrotask
 				// before checking idle, otherwise follow-up can race that flush.
 				defer(() => {
@@ -628,6 +640,7 @@ export default function (pi: ExtensionAPI) {
 				if (closed) return;
 				compactionPending = false;
 				compactionAbortExpected = false;
+				waitingForSummary = false;
 				const resume = interruptedTurn;
 				interruptedTurn = false;
 				if (!resume) return;
@@ -676,7 +689,19 @@ export default function (pi: ExtensionAPI) {
 	// Do not use agent_settled here: long tool loops may cross threshold before
 	// the full run settles. These hooks inspect every provider-turn boundary.
 	// Pre-turn catches resumed/queued work before provider request starts.
-	pi.on("turn_start", (_event, ctx) => compactIfNeeded(ctx));
+	// A run that starts while Pi still waits to summarize is stopped, so the summary can begin;
+	// the resume message continues it once the summary is in.
+	pi.on("turn_start", (_event, ctx) => {
+		if (compactionPending && waitingForSummary) {
+			interruptedTurn = true;
+			resumeAfter = true;
+			compactionAbortExpected = true;
+			appendLog("A turn started while the compaction waited for the previous one to stop; stopped it so the summary can start.");
+			ctx.abort();
+			return;
+		}
+		compactIfNeeded(ctx);
+	});
 
 	// Only tool-call turns need mid-run compaction.
 	pi.on("turn_end", (event, ctx) => {
@@ -828,6 +853,8 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
+		// Pi is summarizing now; a later turn no longer holds the compaction back.
+		if (compactionPending) waitingForSummary = false;
 		if (
 			!active ||
 			!compactionPending ||
