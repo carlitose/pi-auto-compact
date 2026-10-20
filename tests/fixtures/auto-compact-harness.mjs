@@ -21,7 +21,7 @@ export function deferred() {
 export async function harness(options = {}) {
   const handlers = new Map(), commands = new Map(), timers = new Map(), callbacks = [];
   const timeouts = new Map();
-  const calls = { compactions: [], sent: [], notifications: [], saves: [], auth: 0, model: 0, stale: 0, cleared: 0, timeoutsCleared: 0, log: [], rotations: [], markerWrites: [], markerRemovals: [] };
+  const calls = { compactions: [], sent: [], notifications: [], saves: [], auth: 0, model: 0, stale: 0, cleared: 0, timeoutsCleared: 0, log: [], rotations: [], markerWrites: [], markerRemovals: [], aborts: 0 };
   // Fixture filesystem: the extension's log never touches a real path in tests.
   const files = new Map(options.files ?? []);
   const stored = { config: options.config ?? { autoCompactThreshold: 70 } };
@@ -38,6 +38,7 @@ export async function harness(options = {}) {
     getContextUsage() { check(); return { percent: options.percent ?? 90, contextWindow: 100 }; },
     isIdle() { check(); return options.idle ?? true; },
     compact(request) { check(); calls.compactions.push(request); },
+    abort() { check(); calls.aborts++; },
     modelRegistry: { async getApiKeyAndHeaders() {
       check(); calls.auth++;
       return options.auth ? options.auth.promise : { ok: true, apiKey: "fixture-only" };

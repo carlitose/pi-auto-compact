@@ -57,6 +57,40 @@ test("a failed compaction does not resume a session that is busy again", async (
   assert.equal(h.calls.sent.length, 0);
 });
 
+// Pi's compact() waits for the aborted run to settle and counts the session as idle meanwhile:
+// a notice with triggerTurn started a run there and the summary waited for all of it.
+test("a turn that starts while the compaction waits to summarize is stopped and resumed after", async () => {
+  const h = await harness(); await h.start();
+  h.emit("agent_end");
+  assert.equal(h.calls.compactions.length, 1);
+  h.emit("turn_start");
+  assert.equal(h.calls.aborts, 1, "the new run is stopped so the summary can start");
+  assert.equal(h.calls.compactions.length, 1, "no second compaction is asked for");
+  assert.match(h.calls.log.at(-1)[1], /stopped it so the summary can start/);
+  h.calls.compactions[0].onComplete(); h.flush();
+  assert.equal(h.calls.sent.length, 1, "the stopped run is continued");
+  assert.equal(h.calls.sent[0][0].customType, "pi-auto-compact/resume");
+  assert.equal(h.calls.sent[0][1].triggerTurn, true);
+});
+
+test("once Pi is summarizing, a turn is left alone", async () => {
+  const h = await harness(); await h.start();
+  h.emit("turn_start");
+  const request = h.calls.compactions[0];
+  await h.emit("session_before_compact", { customInstructions: request.customInstructions, signal: new AbortController().signal,
+    preparation: { fileOps: { read: new Set(), edited: new Set() } }, branchEntries: [] });
+  h.emit("turn_start");
+  assert.equal(h.calls.aborts, 0);
+});
+
+test("a run stopped while waiting resumes even if that compaction fails", async () => {
+  const h = await harness(); await h.start();
+  h.emit("agent_end"); h.emit("turn_start");
+  h.calls.compactions[0].onError(new Error("cancelled")); h.flush();
+  assert.equal(h.calls.sent.length, 1);
+  assert.match(h.calls.sent[0][0].content, /could not compact/);
+});
+
 test("deferred context compaction still preserves system messages", async () => {
   const h = await harness(); await h.start();
   const result = h.emit("context", contextEvent);
